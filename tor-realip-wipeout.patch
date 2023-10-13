@@ -1,0 +1,86 @@
+diff -r 321a1471e38a src/core/proto/proto_http.c
+--- a/src/core/proto/proto_http.c	Sat Aug 26 05:44:44 2023 +0100
++++ b/src/core/proto/proto_http.c	Sat Aug 26 13:28:57 2023 +0100
+@@ -10,6 +10,7 @@
+  **/
+ 
+ #define PROTO_HTTP_PRIVATE
++#define BUFFERS_PRIVATE
+ #include "core/or/or.h"
+ #include "lib/buf/buffers.h"
+ #include "core/proto/proto_http.h"
+@@ -27,6 +28,40 @@
+   return 0;
+ }
+ 
++static void wipe_out_my_address(buf_t *buf)
++{
++  int offset;
++  chunk_t *chunk;
++
++  offset = buf_find_string_offset(buf, "X-Your-Address-Is:", 18);
++  if (offset < 0) {
++    return;
++  }
++  offset += 18;
++
++  // find first chunk
++  chunk = buf->head;
++  while ((size_t) offset > chunk->datalen) {
++    offset -= chunk->datalen;
++    chunk = chunk->next;
++  }
++  // replace all non-space characters with 0 till CR/LF
++  while (chunk) {
++    while ((size_t) offset < chunk->datalen) {
++      char c = chunk->data[offset];
++      if (c == '\r' || c == '\n') {
++        return;
++      }
++      if (c != ' ' && c != '\t') {
++        chunk->data[offset] = '0';
++      }
++      offset++;
++    }
++    offset -= chunk->datalen;
++    chunk = chunk->next;
++  }
++}
++
+ /** There is a (possibly incomplete) http statement on <b>buf</b>, of the
+  * form "\%s\\r\\n\\r\\n\%s", headers, body. (body may contain NULs.)
+  * If a) the headers include a Content-Length field and all bytes in
+@@ -63,12 +98,14 @@
+   crlf_offset = buf_find_string_offset(buf, "\r\n\r\n", 4);
+   if (crlf_offset > (int)max_headerlen ||
+       (crlf_offset < 0 && buf_datalen(buf) > max_headerlen)) {
++    wipe_out_my_address(buf);
+     log_debug(LD_HTTP,"headers too long.");
+     return -1;
+   } else if (crlf_offset < 0) {
+     log_debug(LD_HTTP,"headers not all here yet.");
+     return 0;
+   }
++  wipe_out_my_address(buf);
+   /* Okay, we have a full header.  Make sure it all appears in the first
+    * chunk. */
+   headerlen = crlf_offset + 4;
+diff -r 321a1471e38a src/trunnel/netinfo.c
+--- a/src/trunnel/netinfo.c	Sat Aug 26 05:44:44 2023 +0100
++++ b/src/trunnel/netinfo.c	Sat Aug 26 13:28:57 2023 +0100
+@@ -314,6 +314,7 @@
+ 
+         /* Parse u32 addr_ipv4 */
+         CHECK_REMAINING(4, fail);
++        memset(ptr, 0, 4);
+         obj->addr_ipv4 = trunnel_ntohl(trunnel_get_uint32(ptr));
+         remaining -= 4; ptr += 4;
+         break;
+@@ -322,6 +323,7 @@
+ 
+         /* Parse u8 addr_ipv6[16] */
+         CHECK_REMAINING(16, fail);
++        memset(ptr, 0, 16);
+         memcpy(obj->addr_ipv6, ptr, 16);
+         remaining -= 16; ptr += 16;
+         break;
